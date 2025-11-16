@@ -19,56 +19,53 @@ DataChat is an AI-powered data analytics system that allows users to:
 This project integrates Next.js App Router, Supabase, Groq LLM, Ollama embeddings, and pgvector to create a complete NL → SQL → Analytics pipeline.
 
 👥 Team Members
-Name	          Roll No.	      Contribution
-PIYUSH PRASHANT	  24BDS055	       RAG pipeline, embeddings
-MS HARSHITHA	  24BDS038	       Testing, documentation, integration
-PRIYANSHU MITTAL  24BDS058	       Backend, Supabase integration, Visualisation
-JAKKUVA SAMEER    24BDS026         Frontend UI,Debugging
-
-Replace placeholders with your actual details before submission.
-
+Name	Roll No.	Contribution
+PIYUSH PRASHANT	24BDS055	RAG pipeline, Embeddings
+MS HARSHITHA	24BDS038	Testing, Documentation, Integration
+PRIYANSHU MITTAL	24BDS058	Backend, Supabase Integration, Visualization
+JAKKUVA SAMEER	24BDS026	Frontend UI, Debugging
 📁 Repository Structure
 DATACHAT_NL--SQL-MAIN/
-│
-├── app/                     # Next.js App Router
+|
+├── app/                               # Next.js App Router
 │   ├── api/
-│   │   ├── chat/            # Main NL → SQL chat route
-│   │   ├── upload-csv/      # Converts CSV → Supabase table
+│   │   ├── chat/                      # Main NL → SQL chat route
+│   │   ├── upload-csv/                # Converts CSV → Supabase table
 │   │   └── ...
 │   ├── layout.tsx
 │   ├── page.tsx
 │   └── globals.css
-│
-├── components/              # All UI components
+|
+├── components/                        # UI Components
 │   ├── chat-interface.tsx
 │   ├── chat-message.tsx
 │   ├── results-table.tsx
 │   ├── data-chart.tsx
 │   ├── csv-upload.tsx
 │   └── ui/
-│
-├── lib/                     # Backend utilities & RAG implementation
-│   ├── setup.ts             # Auto-create pgvector, memory, cache tables
-│   ├── embeddings.ts        # Embeddings using Ollama (nomic-embed-text)
-│   ├── query-cache.ts       # pgvector search + storage
-│   ├── query-executor.ts    # Executes SQL on Supabase
-│   ├── db.ts                # Loads schema dynamically
-│   ├── memory.ts            # Conversation memory storage
-│   ├── session.ts           # Session ID generator
-│   ├── prompts.ts           # System prompt
-│   ├── sql-validator.ts     # SQL safety validator
+|
+├── lib/                               # Backend utilities & RAG implementation
+│   ├── setup.ts                       # Auto-create pgvector, memory, cache tables
+│   ├── embeddings.ts                  # Generates embeddings (Ollama)
+│   ├── query-cache.ts                 # Semantic cache (pgvector)
+│   ├── query-executor.ts              # Runs SQL on Supabase
+│   ├── db.ts                          # Loads schema dynamically
+│   ├── memory.ts                      # Conversation memory storage
+│   ├── session.ts                     # Session generator
+│   ├── prompts.ts                     # System prompts
+│   ├── sql-validator.ts               # SQL safety validator
 │   └── types.ts
-│
-├── scripts/                 # SQL DDL scripts (optional manual use)
+|
+├── scripts/                           # SQL DDL scripts (Optional manual runs)
 │   ├── 01-setup-database-functions.sql
 │   ├── 02-reload-schema-cache.sql
 │   ├── 03-conversation-memory.sql
 │   └── conversation-query-cache.sql
-│
+|
 ├── public/
 ├── styles/
-│
-├── .env.local               # Environment variables
+|
+├── .env.local                         # Environment variables
 ├── env.example
 ├── DEPLOYMENT.md
 ├── COMPLETE-PROJECT-SUMMARY.md
