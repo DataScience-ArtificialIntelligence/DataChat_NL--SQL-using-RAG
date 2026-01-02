@@ -9,8 +9,22 @@ const MAX_ROWS = 50000 // Prevent memory explosion
 
 // --- IMPORTANT: We MUST use service role client for DDL ---
 function getServiceClient() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+
+  if (!url || !serviceKey) {
+    throw new Error(
+      "Missing Supabase environment variables. Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in your .env.local"
+    )
+  }
+
+  // Validate URL format early to provide clearer error messages instead of a generic fetch failure
+  try {
+    // eslint-disable-next-line no-new
+    new URL(url)
+  } catch (e) {
+    throw new Error(`Invalid NEXT_PUBLIC_SUPABASE_URL: ${String(e instanceof Error ? e.message : e)}`)
+  }
 
   return createClient(url, serviceKey, {
     auth: { persistSession: false },

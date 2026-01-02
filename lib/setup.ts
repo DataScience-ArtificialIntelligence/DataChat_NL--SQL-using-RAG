@@ -1,42 +1,102 @@
 import { createClient } from "@supabase/supabase-js"
 
+/**
+ * Ensures RAG setup runs only once per server lifecycle
+ */
 let ragSetupPromise: Promise<void> | null = null
 
+/**
+ * Create admin Supabase client (service role)
+ */
 function admin() {
   if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
     throw new Error("Supabase URL or service role key is not configured")
   }
 
-  return createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  })
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL,
+    process.env.SUPABASE_SERVICE_ROLE_KEY,
+    {
+      auth: { autoRefreshToken: false, persistSession: false },
+    }
+  )
 }
 
 const EMBEDDING_DIM = Number(process.env.EMBEDDING_DIM || "768")
 
-async function runDDL(statement: string) {
-  const supa = admin()
+/**
+ * Small sleep helper
+ */
+function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
 
+/**
+ * Retry wrapper for cold starts / transient Supabase failures
+ */
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  retries = 3,
+  delayMs = 2000
+): Promise<T> {
   try {
-    const { error } = await supa.rpc("execute_ddl", { ddl_statement: statement })
-    if (error) {
-      console.error("[v0] RAG setup DDL error:", error)
-    }
+    return await fn()
   } catch (err) {
-    console.error("[v0] RAG setup RPC failed:", err)
+    if (retries <= 0) throw err
+    console.warn(`[setup] retrying after failure (${retries} left)`)
+    await sleep(delayMs)
+    return withRetry(fn, retries - 1, delayMs)
   }
 }
 
+/**
+ * Executes DDL safely using RPC
+ */
+async function runDDL(statement: string) {
+  const supa = admin()
+
+  await withRetry(async () => {
+    const { error } = await supa.rpc("execute_ddl", {
+      ddl_statement: statement,
+    })
+
+    if (error) {
+      console.error("[setup] DDL error:", error)
+      throw error
+    }
+  })
+}
+
+/**
+ * One-time RAG + DB setup
+ * Safe against:
+ * - Supabase cold starts
+ * - Auto pause / resume
+ * - App restarts
+ */
 export async function ensureRagSetup() {
   if (ragSetupPromise) return ragSetupPromise
 
   ragSetupPromise = (async () => {
-    console.log("[v0] Ensuring Supabase RAG setup...")
+    console.log("[setup] Ensuring Supabase RAG setup...")
 
-    // Enable pgvector extension
-    await runDDL("CREATE EXTENSION IF NOT EXISTS vector;")
+    const supa = admin()
 
-    // Base conversation memory table (used by lib/memory.ts)
+    // 🔥 WARM UP DATABASE (CRITICAL FIX)
+    await withRetry(async () => {
+      const { error } = await supa.rpc("now")
+      if (error) {
+        console.warn("[setup] DB warmup failed, retrying...")
+        throw error
+      }
+    })
+
+    // Enable pgvector
+    await runDDL(`
+      CREATE EXTENSION IF NOT EXISTS vector;
+    `)
+
+    // Conversation memory
     await runDDL(`
       CREATE TABLE IF NOT EXISTS public.conversation_memory (
         id BIGSERIAL PRIMARY KEY,
@@ -53,7 +113,7 @@ export async function ensureRagSetup() {
       ON public.conversation_memory (session_id, created_at DESC);
     `)
 
-    // Semantic query cache table for RAG / frequent queries
+    // Query cache (RAG)
     await runDDL(`
       CREATE TABLE IF NOT EXISTS public.query_cache (
         id BIGSERIAL PRIMARY KEY,
@@ -80,9 +140,8 @@ export async function ensureRagSetup() {
       ON public.query_cache (session_id, table_name, created_at DESC);
     `)
 
-    console.log("[v0] Supabase RAG setup complete")
+    console.log("[setup] Supabase RAG setup complete")
   })()
 
   return ragSetupPromise
 }
-

@@ -97,6 +97,14 @@ async function handleQueryError(error: any, sql: string): Promise<never> {
         details || msg,
         "Check your RLS policies and privileges",
       )
+    case "PGRST202":
+      // PostgREST schema cache errors when RPC functions are missing
+      throw new QueryExecutionError(
+        "Database RPC function not found (PostgREST schema cache)",
+        "PGRST202",
+        details || msg,
+        "Ensure you ran the database setup scripts (scripts/01-setup-database-functions.sql) and reloaded the schema cache (scripts/02-reload-schema-cache.sql) in your Supabase project",
+      )
     default:
       // Supabase PostgREST error object compatibility
       const pgErr = error as PostgrestError
