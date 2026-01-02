@@ -82,21 +82,30 @@ export async function ensureRagSetup() {
 
     const supa = admin()
 
-    // 🔥 WARM UP DATABASE (CRITICAL FIX)
+    /* ---------------------------------
+       🔥 DATABASE WARM-UP (FIXED)
+       --------------------------------- */
     await withRetry(async () => {
-      const { error } = await supa.rpc("now")
+      const { error } = await supa.rpc("execute_raw_sql", {
+        sql_query: "SELECT 1",
+      })
+
       if (error) {
         console.warn("[setup] DB warmup failed, retrying...")
         throw error
       }
     })
 
-    // Enable pgvector
+    /* ---------------------------------
+       Extensions
+       --------------------------------- */
     await runDDL(`
       CREATE EXTENSION IF NOT EXISTS vector;
     `)
 
-    // Conversation memory
+    /* ---------------------------------
+       Conversation memory
+       --------------------------------- */
     await runDDL(`
       CREATE TABLE IF NOT EXISTS public.conversation_memory (
         id BIGSERIAL PRIMARY KEY,
@@ -113,7 +122,9 @@ export async function ensureRagSetup() {
       ON public.conversation_memory (session_id, created_at DESC);
     `)
 
-    // Query cache (RAG)
+    /* ---------------------------------
+       Query cache (RAG)
+       --------------------------------- */
     await runDDL(`
       CREATE TABLE IF NOT EXISTS public.query_cache (
         id BIGSERIAL PRIMARY KEY,

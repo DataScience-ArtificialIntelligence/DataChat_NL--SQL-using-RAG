@@ -1,11 +1,17 @@
 "use client"
 
 import type React from "react"
-
 import { useState, useRef, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
-import { Send, Loader2, AlertCircle, Sparkles, RotateCcw, Trash2 } from "lucide-react"
+import {
+  Send,
+  Loader2,
+  AlertCircle,
+  Sparkles,
+  RotateCcw,
+  Trash2,
+} from "lucide-react"
 import { ChatMessage } from "@/components/chat-message"
 import type { Message } from "@/lib/types"
 
@@ -15,7 +21,11 @@ interface ChatInterfaceProps {
   onReset?: () => void
 }
 
-export function ChatInterface({ tableName, sessionId, onReset }: ChatInterfaceProps) {
+export function ChatInterface({
+  tableName,
+  sessionId,
+  onReset,
+}: ChatInterfaceProps) {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState("")
   const [isLoading, setIsLoading] = useState(false)
@@ -37,7 +47,22 @@ export function ChatInterface({ tableName, sessionId, onReset }: ChatInterfacePr
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!input.trim() || isLoading) return
+
+    if (isLoading || !input.trim()) return
+
+    /* 🔴 HARD GUARD — THIS IS THE KEY FIX */
+    if (!tableName || !sessionId) {
+      const errorMessage: Message = {
+        id: Date.now().toString(),
+        role: "assistant",
+        content:
+          "Please upload a dataset and select a table before asking questions.",
+        error: "no_tables",
+        timestamp: new Date(),
+      }
+      setMessages((prev) => [...prev, errorMessage])
+      return
+    }
 
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -45,6 +70,9 @@ export function ChatInterface({ tableName, sessionId, onReset }: ChatInterfacePr
       content: input,
       timestamp: new Date(),
     }
+
+    // Capture current history BEFORE state update
+    const historySnapshot = [...messages, userMessage]
 
     setMessages((prev) => [...prev, userMessage])
     setInput("")
@@ -54,10 +82,20 @@ export function ChatInterface({ tableName, sessionId, onReset }: ChatInterfacePr
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: input, history: messages, tableName, sessionId }),
+        body: JSON.stringify({
+          message: input,
+          history: historySnapshot,
+          tableName,   // ✅ explicitly passed
+          sessionId,   // ✅ explicitly passed
+        }),
       })
 
-      const data = await response.json()
+      let data: any = {}
+      try {
+        data = await response.json()
+      } catch {
+        data = {}
+      }
 
       if (!response.ok) {
         console.error("[v0] Chat API error:", data)
@@ -73,7 +111,9 @@ export function ChatInterface({ tableName, sessionId, onReset }: ChatInterfacePr
         const assistantMessage: Message = {
           id: (Date.now() + 1).toString(),
           role: "assistant",
-          content: data.content || "Sorry, I encountered an error processing your request.",
+          content:
+            data.content ||
+            "Sorry, I couldn’t process that request. Please try again.",
           error: data.error,
           timestamp: new Date(),
         }
@@ -103,14 +143,16 @@ export function ChatInterface({ tableName, sessionId, onReset }: ChatInterfacePr
       setMessages((prev) => [...prev, assistantMessage])
     } catch (error) {
       console.error("[v0] Chat error:", error)
+
       const errorMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
         content:
-          "Sorry, I encountered an error processing your request. Please make sure you've run the database setup script.",
+          "Sorry, something went wrong while processing your request.",
         error: error instanceof Error ? error.message : "Unknown error",
         timestamp: new Date(),
       }
+
       setMessages((prev) => [...prev, errorMessage])
     } finally {
       setIsLoading(false)
@@ -134,10 +176,15 @@ export function ChatInterface({ tableName, sessionId, onReset }: ChatInterfacePr
               <Sparkles className="w-5 h-5 text-primary" />
             </div>
             <div>
-              <h2 className="text-xl font-bold text-foreground">Chat with your data</h2>
-              <p className="text-sm text-muted-foreground">Ask questions in plain English</p>
+              <h2 className="text-xl font-bold text-foreground">
+                Chat with your data
+              </h2>
+              <p className="text-sm text-muted-foreground">
+                Ask questions in plain English
+              </p>
             </div>
           </div>
+
           <div className="flex items-center gap-2">
             <Button
               variant="outline"
@@ -149,8 +196,14 @@ export function ChatInterface({ tableName, sessionId, onReset }: ChatInterfacePr
               <RotateCcw className="w-4 h-4" />
               Clear Chat
             </Button>
+
             {onReset && (
-              <Button variant="outline" size="sm" onClick={onReset} className="gap-2 bg-transparent">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onReset}
+                className="gap-2 bg-transparent"
+              >
                 <Trash2 className="w-4 h-4" />
                 Reset
               </Button>
@@ -159,12 +212,14 @@ export function ChatInterface({ tableName, sessionId, onReset }: ChatInterfacePr
         </div>
 
         {hasApiKeyError && (
-          <div className="mt-4 p-4 bg-destructive/10 border border-destructive/20 rounded-xl flex items-start gap-3 animate-in">
-            <AlertCircle className="w-5 h-5 text-destructive flex-shrink-0 mt-0.5" />
-            <div className="flex-1 text-sm">
-              <p className="font-semibold text-destructive mb-1">Groq API Key Required</p>
-              <p className="text-muted-foreground leading-relaxed">
-                Add your Groq API key in the <strong>Vars</strong> section. Get one from{" "}
+          <div className="mt-4 p-4 bg-destructive/10 border border-destructive/20 rounded-xl flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-destructive mt-0.5" />
+            <div className="text-sm">
+              <p className="font-semibold text-destructive mb-1">
+                Groq API Key Required
+              </p>
+              <p className="text-muted-foreground">
+                Add your Groq API key in environment variables. Get one from{" "}
                 <a
                   href="https://console.groq.com/keys"
                   target="_blank"
@@ -184,33 +239,38 @@ export function ChatInterface({ tableName, sessionId, onReset }: ChatInterfacePr
         {messages.length === 0 ? (
           <div className="flex items-center justify-center h-full">
             <div className="text-center max-w-xl space-y-6">
-              <div className="space-y-3">
-                <h3 className="text-2xl font-bold text-foreground">Ready to explore your data</h3>
-                <p className="text-muted-foreground leading-relaxed">
-                  Ask questions in natural language and I'll convert them to SQL queries and show you the results.
-                </p>
-              </div>
+              <h3 className="text-2xl font-bold text-foreground">
+                Ready to explore your data
+              </h3>
 
-              <div className="space-y-3">
-                <p className="text-sm font-semibold text-foreground">Try asking:</p>
-                <div className="grid grid-cols-2 gap-2">
-                  {exampleQuestions.map((question, i) => (
-                    <button
-                      key={i}
-                      onClick={() => setInput(question)}
-                      className="p-3 text-left text-sm text-foreground bg-muted hover:bg-muted/80 rounded-lg transition-colors border border-border hover:border-primary/50"
-                    >
-                      {question}
-                    </button>
-                  ))}
-                </div>
-              </div>
+              {!tableName ? (
+                <p className="text-muted-foreground">
+                  Upload a dataset and select a table to start chatting.
+                </p>
+              ) : (
+                <>
+                  <p className="text-muted-foreground">
+                    Try asking:
+                  </p>
+                  <div className="grid grid-cols-2 gap-2">
+                    {exampleQuestions.map((q, i) => (
+                      <button
+                        key={i}
+                        onClick={() => setInput(q)}
+                        className="p-3 text-left text-sm bg-muted hover:bg-muted/80 rounded-lg border border-border"
+                      >
+                        {q}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
             </div>
           </div>
         ) : (
           <>
-            {messages.map((message) => (
-              <ChatMessage key={message.id} message={message} />
+            {messages.map((m) => (
+              <ChatMessage key={m.id} message={m} />
             ))}
             <div ref={messagesEndRef} />
           </>
@@ -223,23 +283,25 @@ export function ChatInterface({ tableName, sessionId, onReset }: ChatInterfacePr
           <Textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Ask a question about your data..."
+            placeholder={
+              tableName
+                ? "Ask a question about your data..."
+                : "Upload and select a table first..."
+            }
             className="min-h-[60px] resize-none bg-background"
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault()
-                handleSubmit(e)
-              }
-            }}
-            disabled={isLoading}
+            disabled={isLoading || !tableName}
           />
           <Button
             type="submit"
             size="icon"
-            className="h-[60px] w-[60px] bg-primary hover:bg-primary/90 transition-all"
-            disabled={isLoading}
+            className="h-[60px] w-[60px]"
+            disabled={isLoading || !tableName}
           >
-            {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
+            {isLoading ? (
+              <Loader2 className="w-5 h-5 animate-spin" />
+            ) : (
+              <Send className="w-5 h-5" />
+            )}
           </Button>
         </form>
       </div>

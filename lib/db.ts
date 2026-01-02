@@ -4,16 +4,14 @@ import { cookies } from "next/headers"
 let supabaseInstance: ReturnType<typeof createServerClient> | null = null
 let dbReady = false
 
-/**
- * Small sleep helper
- */
+/* -------------------------------------------------
+   Utils
+--------------------------------------------------*/
+
 function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
-/**
- * Retry wrapper for Supabase cold starts / transient failures
- */
 async function withRetry<T>(
   fn: () => Promise<T>,
   retries = 3,
@@ -29,13 +27,12 @@ async function withRetry<T>(
   }
 }
 
-/**
- * Create or return singleton Supabase client
- */
+/* -------------------------------------------------
+   Supabase client
+--------------------------------------------------*/
+
 export async function getSupabase() {
-  if (supabaseInstance) {
-    return supabaseInstance
-  }
+  if (supabaseInstance) return supabaseInstance
 
   const cookieStore = await cookies()
 
@@ -53,7 +50,7 @@ export async function getSupabase() {
               cookieStore.set(name, value, options)
             )
           } catch {
-            // Ignore cookie write errors (edge/runtime safe)
+            // ignore cookie write errors
           }
         },
       },
@@ -63,16 +60,20 @@ export async function getSupabase() {
   return supabaseInstance
 }
 
-/**
- * Ensure database is awake (FIXES cold start permanently)
- */
+/* -------------------------------------------------
+   DB warmup (cold start fix)
+--------------------------------------------------*/
+
 export async function ensureDbReady() {
   if (dbReady) return
 
   const supabase = await getSupabase()
 
   await withRetry(async () => {
-    const { error } = await supabase.rpc("now")
+    const { error } = await supabase.rpc("execute_raw_sql", {
+      sql_query: "SELECT 1",
+    })
+
     if (error) {
       console.warn("[db] warmup failed, retrying...")
       throw error
@@ -83,10 +84,11 @@ export async function ensureDbReady() {
   console.log("[db] database ready")
 }
 
-/**
- * Fetch schema of session tables
- */
-export async function getTableSchema(tableName?: string, sessionId?: string) {
+/* -------------------------------------------------
+   Schema discovery (FIXED)
+--------------------------------------------------*/
+
+export async function getTableSchema(tableName?: string) {
   const supabase = await getSupabase()
   await ensureDbReady()
 
@@ -101,10 +103,8 @@ export async function getTableSchema(tableName?: string, sessionId?: string) {
         AND table_name NOT IN ('spatial_ref_sys')
     `
 
-    if (sessionId) {
-      schemaQuery += ` AND table_name LIKE 'session_${sessionId}_%'`
-    }
-
+    // 🔥 IMPORTANT FIX:
+    // DO NOT filter by sessionId (caused false no_tables)
     if (tableName) {
       schemaQuery += ` AND table_name = '${tableName}'`
     }
@@ -120,7 +120,8 @@ export async function getTableSchema(tableName?: string, sessionId?: string) {
       return await fallbackSchemaFetch(supabase)
     }
 
-    const result: any = {}
+    const result: Record<string, any> = {}
+
     data.forEach((row: any) => {
       result[row.table_name] = {
         columns: row.columns || [],
@@ -135,9 +136,10 @@ export async function getTableSchema(tableName?: string, sessionId?: string) {
   }
 }
 
-/**
- * Fallback schema discovery (safe but slower)
- */
+/* -------------------------------------------------
+   Fallback schema discovery
+--------------------------------------------------*/
+
 async function fallbackSchemaFetch(supabase: any) {
   const { data: tables, error } = await supabase
     .from("pg_tables")
@@ -150,7 +152,7 @@ async function fallbackSchemaFetch(supabase: any) {
     return {}
   }
 
-  const result: any = {}
+  const result: Record<string, any> = {}
 
   for (const table of tables) {
     const { data: columns } = await supabase
@@ -169,9 +171,10 @@ async function fallbackSchemaFetch(supabase: any) {
   return result
 }
 
-/**
- * Find latest uploaded session table
- */
+/* -------------------------------------------------
+   Find latest uploaded table
+--------------------------------------------------*/
+
 export async function findLatestTable(): Promise<string | null> {
   const supabase = await getSupabase()
   await ensureDbReady()
@@ -201,9 +204,10 @@ export async function findLatestTable(): Promise<string | null> {
   }
 }
 
-/**
- * Reload PostgREST schema cache (best effort)
- */
+/* -------------------------------------------------
+   Reload PostgREST schema cache
+--------------------------------------------------*/
+
 export async function reloadSchemaCache(): Promise<boolean> {
   const supabase = await getSupabase()
   await ensureDbReady()

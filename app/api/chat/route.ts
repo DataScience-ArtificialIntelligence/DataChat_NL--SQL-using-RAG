@@ -56,6 +56,9 @@ export async function POST(req: Request) {
     await ensureDbReady();
 
     const { message, history, tableName, sessionId } = await req.json();
+    console.log("[chat] tableName received:", tableName);
+    console.log("[chat] sessionId received:", sessionId);
+
 
     if (!message || !message.trim()) {
       return Response.json(
