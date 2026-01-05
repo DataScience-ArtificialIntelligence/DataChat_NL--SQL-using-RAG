@@ -1,10 +1,12 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // TypeScript and ESLint errors are now properly handled
+  // Removed ignore flags to catch errors during build
   eslint: {
-    ignoreDuringBuilds: true,
+    // Errors will now fail the build - fix them instead of ignoring
   },
   typescript: {
-    ignoreBuildErrors: true,
+    // Errors will now fail the build - fix them instead of ignoring
   },
   images: {
     unoptimized: true,

@@ -91,7 +91,7 @@ export async function POST(req: NextRequest) {
         skipEmptyLines: "greedy",
 
         /* 🔥 FIX IS HERE */
-        transformHeader: (h, i) => {
+        transformHeader: (h: string, i: number) => {
           try {
             return safeIdentifier(h).slice(0, 63);
           } catch {
@@ -100,7 +100,7 @@ export async function POST(req: NextRequest) {
           }
         },
 
-        complete: async (results) => {
+        complete: async (results: Papa.ParseResult<Record<string, unknown>>) => {
           try {
             if (results.errors.length > 0) {
               resolve(
@@ -245,7 +245,7 @@ export async function POST(req: NextRequest) {
           }
         },
 
-        error: (err) => {
+        error: (err: Error) => {
           resolve(Response.json({ error: err.message }, { status: 400 }));
         },
       });

@@ -121,9 +121,10 @@ export async function getTableSchema(tableName?: string) {
 
     schemaQuery += ` GROUP BY table_name ORDER BY table_name DESC`
 
-    const { data, error } = await withRetry(() =>
+    const rpcResult = await withRetry(() =>
       supabase.rpc("execute_raw_sql", { sql_query: schemaQuery })
     )
+    const { data, error } = rpcResult as { data: unknown; error: unknown }
 
     if (error || !Array.isArray(data)) {
       console.warn("[db] schema RPC failed, using fallback")
@@ -190,7 +191,7 @@ export async function findLatestTable(): Promise<string | null> {
   await ensureDbReady()
 
   try {
-    const { data, error } = await withRetry(() =>
+    const rpcResult = await withRetry(() =>
       supabase.rpc("execute_raw_sql", {
         sql_query: `
           SELECT table_name
@@ -202,6 +203,7 @@ export async function findLatestTable(): Promise<string | null> {
         `,
       })
     )
+    const { data, error } = rpcResult as { data: unknown; error: unknown }
 
     if (error || !Array.isArray(data) || data.length === 0) {
       return null
