@@ -1,6 +1,7 @@
 import { neon } from "@neondatabase/serverless"
 import { createClient } from "@supabase/supabase-js"
 import type { TableSchema } from "@/lib/types"
+import { validateSessionId, safeTableNameLiteral } from "@/lib/sql-escape"
 
 export interface DatabaseAdapter {
   query<T = any>(sql: string): Promise<T[]>
@@ -32,13 +33,14 @@ class NeonPostgresAdapter implements DatabaseAdapter {
   }
 
   async query<T = any>(sqlText: string): Promise<T[]> {
-    const rows = (await this.sql.unsafe(sqlText)) as any[]
+    const rows = (await this.sql.unsafe(sqlText)) as unknown
     return Array.isArray(rows) ? (rows as T[]) : []
   }
 
   async explain(sqlText: string): Promise<any> {
-    const rows = (await this.sql.unsafe(`EXPLAIN (FORMAT JSON) ${sqlText}`)) as any[]
-    const planRow = rows?.[0]
+    const rows = (await this.sql.unsafe(`EXPLAIN (FORMAT JSON) ${sqlText}`)) as unknown
+    const rowsArray = Array.isArray(rows) ? rows : [rows]
+    const planRow = rowsArray?.[0]
     const key = Object.keys(planRow || {}).find((k) => k.toLowerCase().includes("query plan"))
     return key ? planRow[key] : rows
   }
@@ -49,8 +51,28 @@ class NeonPostgresAdapter implements DatabaseAdapter {
       `table_name LIKE 'session_%'`,
       `table_name NOT IN ('spatial_ref_sys')`,
     ]
-    if (params?.sessionId) filters.push(`table_name LIKE 'session_${params.sessionId}_%'`)
-    if (params?.tableName) filters.push(`table_name = '${params.tableName}'`)
+    try {
+      if (params?.sessionId) {
+        // Validate sessionId - if valid, it only contains safe characters (alphanumeric, underscore, hyphen)
+        // so it's safe to use directly in LIKE pattern
+        if (validateSessionId(params.sessionId)) {
+          // Escape single quotes for SQL string literal (though sessionId shouldn't contain quotes after validation)
+          const escapedSession = params.sessionId.replace(/'/g, "''")
+          filters.push(`table_name LIKE 'session_${escapedSession}_%'`)
+        } else {
+          console.warn("[db-adapter] Invalid sessionId format, skipping filter")
+        }
+      }
+      if (params?.tableName) {
+        const safeTable = safeTableNameLiteral(params.tableName)
+        if (safeTable) {
+          filters.push(`table_name = ${safeTable}`)
+        }
+      }
+    } catch (error) {
+      console.error("[db-adapter] Error processing sessionId or tableName in getSchema:", error)
+      // Continue without filters if validation fails
+    }
 
     const query = `
       SELECT 
@@ -110,8 +132,28 @@ class SupabasePostgresAdapter implements DatabaseAdapter {
         AND table_name LIKE 'session_%'
         AND table_name NOT IN ('spatial_ref_sys')
     `
-    if (params?.sessionId) schemaQuery += ` AND table_name LIKE 'session_${params.sessionId}_%'`
-    if (params?.tableName) schemaQuery += ` AND table_name = '${params.tableName}'`
+    try {
+      if (params?.sessionId) {
+        // Validate sessionId - if valid, it only contains safe characters (alphanumeric, underscore, hyphen)
+        // so it's safe to use directly in LIKE pattern
+        if (validateSessionId(params.sessionId)) {
+          // Escape single quotes for SQL string literal (though sessionId shouldn't contain quotes after validation)
+          const escapedSession = params.sessionId.replace(/'/g, "''")
+          schemaQuery += ` AND table_name LIKE 'session_${escapedSession}_%'`
+        } else {
+          console.warn("[db-adapter] Invalid sessionId format, skipping filter")
+        }
+      }
+      if (params?.tableName) {
+        const safeTable = safeTableNameLiteral(params.tableName)
+        if (safeTable) {
+          schemaQuery += ` AND table_name = ${safeTable}`
+        }
+      }
+    } catch (error) {
+      console.error("[db-adapter] Error processing sessionId or tableName in getSchema:", error)
+      // Continue without filters if validation fails
+    }
     schemaQuery += ` GROUP BY table_name ORDER BY table_name DESC`
 
     const { data, error } = await this.admin.rpc("execute_raw_sql", { sql_query: schemaQuery })

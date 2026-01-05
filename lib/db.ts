@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr"
 import { cookies } from "next/headers"
+import { safeTableNameLiteral } from "@/lib/sql-escape"
 
 let supabaseInstance: ReturnType<typeof createServerClient> | null = null
 let dbReady = false
@@ -106,7 +107,16 @@ export async function getTableSchema(tableName?: string) {
     // 🔥 IMPORTANT FIX:
     // DO NOT filter by sessionId (caused false no_tables)
     if (tableName) {
-      schemaQuery += ` AND table_name = '${tableName}'`
+      try {
+        const safeTable = safeTableNameLiteral(tableName)
+        if (safeTable) {
+          schemaQuery += ` AND table_name = ${safeTable}`
+        }
+      } catch (error) {
+        console.error("[db] Invalid tableName in getTableSchema:", error)
+        // If table name is invalid, return empty schema rather than throwing
+        return {}
+      }
     }
 
     schemaQuery += ` GROUP BY table_name ORDER BY table_name DESC`

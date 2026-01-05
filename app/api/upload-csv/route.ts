@@ -4,6 +4,7 @@ import type { NextRequest } from "next/server";
 import Papa from "papaparse";
 import { createClient } from "@supabase/supabase-js";
 import { getOrCreateSession } from "@/lib/session";
+import { validateSessionId } from "@/lib/sql-escape";
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 const MAX_ROWS = 50000;
@@ -157,11 +158,17 @@ export async function POST(req: NextRequest) {
             ------------------------------*/
             const colDefs = headers.map((h) => `"${h}" TEXT`).join(", ");
 
+            // Validate and escape session.id for SQL (defense-in-depth, though nanoid is already safe)
+            if (!validateSessionId(session.id)) {
+              throw new Error("Invalid session ID format");
+            }
+            const escapedSessionId = session.id.replace(/'/g, "''");
+            
             const createSql = `
               CREATE TABLE IF NOT EXISTS "${tableName}" (
                 id BIGSERIAL PRIMARY KEY,
                 ${colDefs},
-                session_id TEXT NOT NULL DEFAULT '${session.id}',
+                session_id TEXT NOT NULL DEFAULT '${escapedSessionId}',
                 created_at TIMESTAMPTZ DEFAULT NOW()
               );
             `;
@@ -190,7 +197,8 @@ export async function POST(req: NextRequest) {
                     ? `'${String(row[h]).replace(/'/g, "''")}'`
                     : "NULL"
                 );
-                vals.push(`'${session.id}'`);
+                // session.id is already validated above, escape for SQL string literal
+                vals.push(`'${session.id.replace(/'/g, "''")}'`);
                 return `(${vals.join(", ")})`;
               })
               .join(", ");

@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js"
 import type { QueryResult } from "@/lib/types"
+import { safeVectorLiteral, safeSessionId, safeTableNameLiteral } from "@/lib/sql-escape"
 
 // expected vector size
 const EMBEDDING_DIM = Number(process.env.EMBEDDING_DIM || "768")
@@ -67,13 +68,26 @@ export async function findSimilarCachedQuery(params: {
 
   const supa = admin()
 
-  // pgvector literal for similarity search
-  const vectorLiteral = `'[${embedding.join(",")}]'::vector`
+  // Safely construct pgvector literal for similarity search
+  const vectorLiteral = safeVectorLiteral(embedding, EMBEDDING_DIM)
 
+  // Safely construct WHERE clause filters using proper escaping
   const filters: string[] = []
 
-  if (sessionId) filters.push(`session_id = '${sessionId.replace(/'/g, "''")}'`)
-  if (tableName) filters.push(`table_name = '${tableName.replace(/'/g, "''")}'`)
+  try {
+    const safeSession = safeSessionId(sessionId ?? undefined)
+    if (safeSession) {
+      filters.push(`session_id = ${safeSession}`)
+    }
+
+    const safeTable = safeTableNameLiteral(tableName ?? undefined)
+    if (safeTable) {
+      filters.push(`table_name = ${safeTable}`)
+    }
+  } catch (error) {
+    console.error("[query-cache] Invalid sessionId or tableName:", error)
+    return null
+  }
 
   const whereClause = filters.length ? `WHERE ${filters.join(" AND ")}` : ""
 

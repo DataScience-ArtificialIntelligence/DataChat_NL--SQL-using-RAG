@@ -104,14 +104,14 @@ export async function POST(req: Request) {
        Load schema
     ----------------------------------*/
     let schema = await withRetry(() =>
-      getTableSchema(actualTableName ?? undefined, session.id)
+      getTableSchema(actualTableName ?? undefined)
     );
 
     if (!schema || Object.keys(schema).length === 0) {
       const fallback = await findLatestTable();
       if (fallback) {
         actualTableName = fallback;
-        schema = await getTableSchema(actualTableName, session.id);
+        schema = await getTableSchema(actualTableName);
       }
     }
 
