@@ -57,7 +57,7 @@ function buildTableName(fileName: string, sessionId: string) {
 /* -----------------------------
    Route
 ------------------------------*/
-export async function POST(req: NextRequest) {
+export async function POST(req: NextRequest): Promise<Response> {
   try {
     const session = await getOrCreateSession();
     const formData = await req.formData();
@@ -85,7 +85,7 @@ export async function POST(req: NextRequest) {
 
     const supabase = getServiceClient();
 
-    return new Promise((resolve) => {
+    return new Promise<Response>((resolve) => {
       Papa.parse(content, {
         header: true,
         skipEmptyLines: "greedy",

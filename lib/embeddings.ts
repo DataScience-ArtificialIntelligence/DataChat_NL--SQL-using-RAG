@@ -52,10 +52,12 @@ export async function embedText(text: string): Promise<number[]> {
       console.error("[Embeddings] Wrong vector dim:", {
         got: vector.length,
         expected: 768,
+        text: text.substring(0, 100),
       });
       return [];
     }
 
+    console.log(`[Embeddings] Success: ${vector.length} dims for "${text.substring(0, 50)}..."`)
     return vector;
   } catch (err) {
     console.error("[Embeddings] Failed:", err);

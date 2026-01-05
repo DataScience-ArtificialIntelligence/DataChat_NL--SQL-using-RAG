@@ -146,12 +146,33 @@ export async function ensureRagSetup() {
       WITH (lists = 100);
     `)
 
+    /* ---------------------------------
+       Schema registry (RAG)
+       --------------------------------- */
     await runDDL(`
-      CREATE INDEX IF NOT EXISTS idx_query_cache_session_table
-      ON public.query_cache (session_id, table_name, created_at DESC);
+      CREATE TABLE IF NOT EXISTS public.schema_registry (
+        id BIGSERIAL PRIMARY KEY,
+        table_name TEXT NOT NULL,
+        column_name TEXT NOT NULL,
+        data_type TEXT NOT NULL,
+        description TEXT,
+        schema_text TEXT NOT NULL,
+        embedding VECTOR(${EMBEDDING_DIM}) NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(table_name, column_name)
+      );
     `)
 
-    console.log("[setup] Supabase RAG setup complete")
+    await runDDL(`
+      CREATE INDEX IF NOT EXISTS idx_schema_registry_embedding
+      ON public.schema_registry
+      USING hnsw (embedding vector_cosine_ops);
+    `)
+
+    await runDDL(`
+      CREATE INDEX IF NOT EXISTS idx_schema_registry_table
+      ON public.schema_registry (table_name);
+    `)
   })()
 
   return ragSetupPromise

@@ -10,11 +10,10 @@ import { getOrCreateSession } from "@/lib/session";
 import { systemPrompt } from "@/lib/prompts";
 import { addMemory, getRecentMemory } from "@/lib/memory";
 import { ensureRagSetup } from "@/lib/setup";
+import { getSchemaContextForQuery, populateSchemaRegistry } from "@/lib/schema-registry";
+import { findSimilarCachedQuery } from "@/lib/query-cache";
 import { embedText } from "@/lib/embeddings";
-import {
-  findSimilarCachedQuery,
-  storeQueryInCache,
-} from "@/lib/query-cache";
+import { storeQueryInCache } from "@/lib/query-cache";
 
 import type { QueryResult } from "@/lib/types";
 
@@ -123,13 +122,16 @@ export async function POST(req: Request) {
     }
 
     /* ---------------------------------
+       Populate schema registry
+    ----------------------------------*/
+    await populateSchemaRegistry(schema).catch(err => {
+      console.warn("[chat] Failed to populate schema registry:", err)
+    });
+
+    /* ---------------------------------
        Prompt construction
     ----------------------------------*/
-    const schemaContext = Object.entries(schema)
-      .map(
-        ([t, info]) => `Table: ${t}\nColumns: ${info.columns.join(", ")}`
-      )
-      .join("\n\n");
+    const schemaContext = await getSchemaContextForQuery(message, schema);
 
     const persisted = await getRecentMemory(session.id, 8);
     const recentInline = (history || []).slice(-3);

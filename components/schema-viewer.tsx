@@ -100,9 +100,9 @@ export function SchemaViewer({ tableName }: SchemaViewerProps) {
                 <div className="space-y-1.5 pl-6">
                   <p className="text-xs font-semibold text-foreground mb-2">Columns:</p>
                   {tableInfo.columns.map((column) => (
-                    <div key={column} className="flex items-center gap-2">
+                    <div key={column.name} className="flex items-center gap-2">
                       <div className="w-1.5 h-1.5 rounded-full bg-primary" />
-                      <span className="font-mono text-xs text-foreground">{column}</span>
+                      <span className="font-mono text-xs text-foreground">{column.name} ({column.dataType})</span>
                     </div>
                   ))}
                 </div>

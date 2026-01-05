@@ -77,19 +77,27 @@ class NeonPostgresAdapter implements DatabaseAdapter {
     const query = `
       SELECT 
         c.table_name,
-        array_agg(c.column_name ORDER BY c.ordinal_position) as columns
+        c.column_name,
+        c.data_type,
+        c.ordinal_position
       FROM information_schema.columns c
       WHERE ${filters.join(" AND ")}
-      GROUP BY c.table_name
-      ORDER BY c.table_name DESC
+      ORDER BY c.table_name, c.ordinal_position
     `
-    const rows = await this.query<{ table_name: string; columns: string[] }>(query)
+    const rows = await this.query<{ table_name: string; column_name: string; data_type: string; ordinal_position: number }>(query)
     const result: TableSchema = {}
     for (const r of rows) {
-      result[r.table_name] = {
-        columns: r.columns || [],
-        description: "User uploaded data table",
+      if (!result[r.table_name]) {
+        result[r.table_name] = {
+          columns: [],
+          description: "User uploaded data table",
+        }
       }
+      result[r.table_name].columns.push({
+        name: r.column_name,
+        dataType: r.data_type,
+        description: `Column ${r.column_name} of type ${r.data_type}`,
+      })
     }
     return result
   }
@@ -126,7 +134,9 @@ class SupabasePostgresAdapter implements DatabaseAdapter {
     let schemaQuery = `
       SELECT 
         table_name,
-        array_agg(column_name ORDER BY ordinal_position) as columns
+        column_name,
+        data_type,
+        ordinal_position
       FROM information_schema.columns 
       WHERE table_schema = 'public'
         AND table_name LIKE 'session_%'
@@ -154,7 +164,7 @@ class SupabasePostgresAdapter implements DatabaseAdapter {
       console.error("[db-adapter] Error processing sessionId or tableName in getSchema:", error)
       // Continue without filters if validation fails
     }
-    schemaQuery += ` GROUP BY table_name ORDER BY table_name DESC`
+    schemaQuery += ` ORDER BY table_name, ordinal_position`
 
     const { data, error } = await this.admin.rpc("execute_raw_sql", { sql_query: schemaQuery })
     if (error) {
@@ -171,12 +181,16 @@ class SupabasePostgresAdapter implements DatabaseAdapter {
           const { data: columns } = await this.admin
             // @ts-ignore: information_schema available via PostgREST
             .from("information_schema.columns")
-            .select("column_name, ordinal_position")
+            .select("column_name, data_type, ordinal_position")
             .eq("table_schema", "public")
             .eq("table_name", t.tablename)
             .order("ordinal_position")
           result[t.tablename] = {
-            columns: (columns || []).map((c: any) => c.column_name),
+            columns: (columns || []).map((c: any) => ({
+              name: c.column_name,
+              dataType: c.data_type,
+              description: `Column ${c.column_name} of type ${c.data_type}`,
+            })),
             description: "User uploaded data table",
           }
         }
@@ -187,10 +201,17 @@ class SupabasePostgresAdapter implements DatabaseAdapter {
     const result: TableSchema = {}
     if (Array.isArray(data)) {
       data.forEach((row: any) => {
-        result[row.table_name] = {
-          columns: row.columns || [],
-          description: "User uploaded data table",
+        if (!result[row.table_name]) {
+          result[row.table_name] = {
+            columns: [],
+            description: "User uploaded data table",
+          }
         }
+        result[row.table_name].columns.push({
+          name: row.column_name,
+          dataType: row.data_type,
+          description: `Column ${row.column_name} of type ${row.data_type}`,
+        })
       })
     }
     return result

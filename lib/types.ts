@@ -12,9 +12,15 @@ export interface QueryResult {
   [key: string]: any
 }
 
+export interface ColumnInfo {
+  name: string
+  dataType: string
+  description?: string
+}
+
 export interface TableSchema {
   [tableName: string]: {
-    columns: string[]
+    columns: ColumnInfo[]
     description: string
   }
 }

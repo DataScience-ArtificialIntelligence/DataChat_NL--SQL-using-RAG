@@ -2,6 +2,38 @@
 
 This document provides a comprehensive list of improvements that can be made to the DataChat NL→SQL project. The improvements are organized by category and prioritized by impact.
 
+## ✅ IMPLEMENTED - Industry-Level Schema Retrieval
+
+### Schema Registry with RAG-based Retrieval
+**Status**: ✅ IMPLEMENTED
+**Files Modified**: 
+- `lib/types.ts` - Updated TableSchema interface
+- `lib/db-adapter.ts` - Enhanced schema fetching with data types
+- `lib/setup.ts` - Added schema_registry table creation
+- `lib/schema-registry.ts` - New file for schema management
+- `app/api/chat/route.ts` - Integrated schema retrieval
+- `lib/prompts.ts` - Updated system prompt
+- `scripts/04-schema-registry.sql` - Database schema
+
+**What was implemented**:
+1. **Schema Registry Table**: Created `schema_registry` table to store table/column metadata with embeddings
+2. **Enhanced Schema Fetching**: Modified database adapters to fetch column data types from `information_schema.columns`
+3. **Embedding Generation**: Schema descriptions are embedded using the same model (nomic-embed-text)
+4. **Semantic Retrieval**: User queries retrieve only relevant schema columns using vector similarity search
+5. **Schema-Aware Prompts**: Updated system prompt to strictly enforce using only provided schema
+6. **Fallback Handling**: Falls back to full schema if retrieval fails
+
+**Benefits**:
+- **Massive Hallucination Reduction**: LLM only sees relevant tables/columns for the query
+- **Better Performance**: Smaller context windows, faster inference
+- **Industry Standard**: Matches production RAG implementations
+- **Scalable**: Works with hundreds of tables without context bloat
+
+**Example**:
+- Query: "What is the average transaction amount per day last month?"
+- Retrieves: `transactions.amount`, `transactions.created_at`
+- Prompt includes only relevant schema, preventing hallucinations about unrelated tables
+
 ## 🔴 CRITICAL - Security & Stability Issues
 
 ### 1. SQL Injection Vulnerability in Query Cache

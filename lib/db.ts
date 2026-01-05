@@ -97,7 +97,11 @@ export async function getTableSchema(tableName?: string) {
     let schemaQuery = `
       SELECT 
         table_name,
-        array_agg(column_name ORDER BY ordinal_position) AS columns
+        array_agg(json_build_object(
+          'name', column_name,
+          'dataType', data_type,
+          'description', 'Column ' || column_name || ' of type ' || data_type
+        ) ORDER BY ordinal_position) AS columns
       FROM information_schema.columns
       WHERE table_schema = 'public'
         AND table_name LIKE 'session_%'
