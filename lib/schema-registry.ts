@@ -7,7 +7,10 @@ import { escapeLiteral } from "@/lib/sql-escape"
 const EMBEDDING_DIM = Number(process.env.EMBEDDING_DIM || "768")
 
 function admin() {
-  if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  if (
+    !process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    !process.env.SUPABASE_SERVICE_ROLE_KEY
+  ) {
     throw new Error("Supabase URL or service role key is not configured")
   }
 
@@ -21,23 +24,34 @@ function admin() {
 /**
  * Generate schema text for embedding
  */
-function schemaToText(tableName: string, columnName: string, dataType: string, description?: string): string {
-  return `Table ${tableName}, column ${columnName} (${dataType}): ${description || `Column ${columnName} of type ${dataType}`}`
+function schemaToText(
+  tableName: string,
+  columnName: string,
+  dataType: string,
+  description?: string
+): string {
+  return `Table ${tableName}, column ${columnName} (${dataType}): ${
+    description || `Column ${columnName} of type ${dataType}`
+  }`
 }
 
 /**
  * Populate schema registry with embeddings
  */
-export async function populateSchemaRegistry(schema: TableSchema): Promise<void> {
+export async function populateSchemaRegistry(
+  schema: TableSchema
+): Promise<void> {
   const supa = admin()
 
   for (const [tableName, tableInfo] of Object.entries(schema)) {
     for (const column of tableInfo.columns) {
       if (!column.name || !column.dataType) {
-        console.warn(`[schema-registry] Skipping invalid column: ${tableName}.${column.name} (${column.dataType})`)
+        console.warn(
+          `[schema-registry] Skipping invalid column: ${tableName}.${column.name} (${column.dataType})`
+        )
         continue
       }
-      // Check if already exists
+
       const { data: existing } = await supa
         .from("schema_registry")
         .select("id")
@@ -47,27 +61,41 @@ export async function populateSchemaRegistry(schema: TableSchema): Promise<void>
 
       if (existing) continue
 
-      // Generate embedding
-      const schemaText = schemaToText(tableName, column.name, column.dataType, column.description)
-      const embedding = await embedText(schemaText)
+      const schemaText = schemaToText(
+        tableName,
+        column.name,
+        column.dataType,
+        column.description
+      )
 
+      const embedding = await embedText(schemaText)
       if (!embedding.length) {
         console.warn(`[schema-registry] Failed to embed: ${schemaText}`)
         continue
       }
 
-      // Insert using raw SQL to properly handle vector
       const embeddingStr = `[${embedding.join(",")}]`
       const sql = `
-        INSERT INTO schema_registry (table_name, column_name, data_type, description, schema_text, embedding)
-        VALUES (${escapeLiteral(tableName)}, ${escapeLiteral(column.name)}, ${escapeLiteral(column.dataType)}, ${column.description ? escapeLiteral(column.description) : 'NULL'}, ${escapeLiteral(schemaText)}, '${embeddingStr}'::vector)
+        INSERT INTO schema_registry
+          (table_name, column_name, data_type, description, schema_text, embedding)
+        VALUES
+          (${escapeLiteral(tableName)},
+           ${escapeLiteral(column.name)},
+           ${escapeLiteral(column.dataType)},
+           ${column.description ? escapeLiteral(column.description) : "NULL"},
+           ${escapeLiteral(schemaText)},
+           '${embeddingStr}'::vector)
       `
+
       const { error } = await supa.rpc("execute_ddl", {
-        ddl_statement: sql
+        ddl_statement: sql,
       })
 
       if (error) {
-        console.error(`[schema-registry] Failed to insert ${tableName}.${column.name}:`, error)
+        console.error(
+          `[schema-registry] Failed to insert ${tableName}.${column.name}:`,
+          error
+        )
       }
     }
   }
@@ -76,7 +104,10 @@ export async function populateSchemaRegistry(schema: TableSchema): Promise<void>
 /**
  * Retrieve relevant schema for a user query
  */
-export async function retrieveRelevantSchema(userQuery: string, topK: number = 5): Promise<string[]> {
+export async function retrieveRelevantSchema(
+  userQuery: string,
+  topK: number = 5
+): Promise<string[]> {
   const supa = admin()
 
   const queryEmbedding = await embedText(userQuery)
@@ -93,7 +124,7 @@ export async function retrieveRelevantSchema(userQuery: string, topK: number = 5
       FROM schema_registry
       ORDER BY embedding <=> ${vectorLiteral}
       LIMIT ${topK}
-    `
+    `,
   })
 
   if (error) {
@@ -101,7 +132,6 @@ export async function retrieveRelevantSchema(userQuery: string, topK: number = 5
     return []
   }
 
-  // Return unique table.column strings
   const uniqueSchemas = new Set<string>()
   if (Array.isArray(data)) {
     for (const row of data) {
@@ -113,33 +143,65 @@ export async function retrieveRelevantSchema(userQuery: string, topK: number = 5
 }
 
 /**
- * Get schema context string for prompt
+ * Get schema context string for prompt (LLM-safe, closed-world)
  */
-export async function getSchemaContextForQuery(userQuery: string, fullSchema: TableSchema): Promise<string> {
+export async function getSchemaContextForQuery(
+  userQuery: string,
+  fullSchema: TableSchema
+): Promise<string> {
   const relevantColumns = await retrieveRelevantSchema(userQuery, 10)
 
+  const formatTable = (
+    table: string,
+    columns: { name: string; dataType: string; description?: string }[]
+  ) => {
+    return `
+TABLE: ${table}
+COLUMNS:
+${columns
+  .map(
+    c =>
+      `- ${c.name} (${c.dataType})${
+        c.description ? `: ${c.description}` : ""
+      }`
+  )
+  .join("\n")}
+`.trim()
+  }
+
+  /* ---------- Fallback: full schema ---------- */
   if (!relevantColumns.length) {
-    // Fallback to full schema if retrieval fails
     return Object.entries(fullSchema)
-      .map(([t, info]) => `Table: ${t}\nColumns: ${info.columns.map(c => `${c.name} (${c.dataType})`).join(", ")}`)
+      .map(([table, info]) => formatTable(table, info.columns))
       .join("\n\n")
   }
 
-  // Group by table
-  const tableMap: { [table: string]: string[] } = {}
+  /* ---------- RAG-based schema ---------- */
+  const tableMap: Record<string, Set<string>> = {}
+
   for (const col of relevantColumns) {
-    const [table, column] = col.split('.')
-    if (!tableMap[table]) tableMap[table] = []
-    tableMap[table].push(column)
+    const [table, column] = col.split(".")
+    if (!tableMap[table]) tableMap[table] = new Set()
+    tableMap[table].add(column)
   }
 
   return Object.entries(tableMap)
-    .map(([table, columns]) => {
+    .map(([table, columnSet]) => {
       const tableInfo = fullSchema[table]
-      if (!tableInfo) return `Table: ${table}\nColumns: ${columns.join(", ")}`
 
-      const relevantColumnInfos = tableInfo.columns.filter(c => columns.includes(c.name))
-      return `Table: ${table}\nColumns: ${relevantColumnInfos.map(c => `${c.name} (${c.dataType})`).join(", ")}`
+      if (!tableInfo) {
+        return `
+TABLE: ${table}
+COLUMNS:
+${Array.from(columnSet).map(c => `- ${c}`).join("\n")}
+`.trim()
+      }
+
+      const relevantColumnInfos = tableInfo.columns.filter(c =>
+        columnSet.has(c.name)
+      )
+
+      return formatTable(table, relevantColumnInfos)
     })
     .join("\n\n")
 }

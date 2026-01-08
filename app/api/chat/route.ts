@@ -5,15 +5,23 @@ import { generateText } from "ai";
 
 import { getTableSchema, findLatestTable, ensureDbReady } from "@/lib/db";
 import { executeQuery } from "@/lib/query-executor";
-import { validateSQL } from "@/lib/sql-validator";
 import { getOrCreateSession } from "@/lib/session";
-import { systemPrompt } from "@/lib/prompts";
-import { addMemory, getRecentMemory } from "@/lib/memory";
+import { addMemory } from "@/lib/memory";
 import { ensureRagSetup } from "@/lib/setup";
-import { getSchemaContextForQuery, populateSchemaRegistry } from "@/lib/schema-registry";
-import { findSimilarCachedQuery } from "@/lib/query-cache";
+import {
+  getSchemaContextForQuery,
+  populateSchemaRegistry,
+} from "@/lib/schema-registry";
+import {
+  findSimilarCachedQuery,
+  storeQueryInCache,
+} from "@/lib/query-cache";
 import { embedText } from "@/lib/embeddings";
-import { storeQueryInCache } from "@/lib/query-cache";
+
+import { structuredReasoning } from "@/lib/reasoning/structuredReasoning";
+import { validatePlan } from "@/lib/reasoning/validator";
+import { normalizeSchema } from "@/lib/reasoning/normalizeSchema";
+import { buildSQL } from "@/lib/sql/sqlBuilder";
 
 import type { QueryResult } from "@/lib/types";
 
@@ -49,15 +57,12 @@ export async function POST(req: Request) {
 
   try {
     /* ---------------------------------
-       Infra warmup (CRITICAL FIX)
+       Infra warmup
     ----------------------------------*/
     await ensureRagSetup();
     await ensureDbReady();
 
-    const { message, history, tableName, sessionId } = await req.json();
-    console.log("[chat] tableName received:", tableName);
-    console.log("[chat] sessionId received:", sessionId);
-
+    const { message, tableName, sessionId } = await req.json();
 
     if (!message || !message.trim()) {
       return Response.json(
@@ -73,8 +78,6 @@ export async function POST(req: Request) {
       ? { id: sessionId, createdAt: Date.now() }
       : await getOrCreateSession();
 
-    let actualTableName = tableName ?? null;
-
     await addMemory({
       sessionId: session.id,
       role: "user",
@@ -82,39 +85,23 @@ export async function POST(req: Request) {
     }).catch(() => {});
 
     /* ---------------------------------
-       Groq key
-    ----------------------------------*/
-    const apiKey =
-      process.env.GROQ_API_KEY ||
-      process.env.NEXT_PUBLIC_GROQ_API_KEY ||
-      process.env.GROQ ||
-      process.env.GROQ_KEY;
-
-    if (!apiKey || !apiKey.startsWith("gsk_")) {
-      return Response.json(
-        { content: "Missing GROQ_API_KEY", error: "invalid_key" },
-        { status: 500 }
-      );
-    }
-
-    const groq = createGroq({ apiKey: apiKey.trim() });
-
-    /* ---------------------------------
        Load schema
     ----------------------------------*/
-    let schema = await withRetry(() =>
+    let actualTableName = tableName ?? null;
+
+    let rawSchema = await withRetry(() =>
       getTableSchema(actualTableName ?? undefined)
     );
 
-    if (!schema || Object.keys(schema).length === 0) {
+    if (!rawSchema || Object.keys(rawSchema).length === 0) {
       const fallback = await findLatestTable();
       if (fallback) {
         actualTableName = fallback;
-        schema = await getTableSchema(actualTableName);
+        rawSchema = await getTableSchema(actualTableName);
       }
     }
 
-    if (!schema || Object.keys(schema).length === 0) {
+    if (!rawSchema || Object.keys(rawSchema).length === 0) {
       return Response.json(
         { content: "No tables available.", error: "no_tables" },
         { status: 400 }
@@ -122,34 +109,13 @@ export async function POST(req: Request) {
     }
 
     /* ---------------------------------
-       Populate schema registry
+       Normalize schema (CRITICAL FIX)
     ----------------------------------*/
-    await populateSchemaRegistry(schema).catch(err => {
-      console.warn("[chat] Failed to populate schema registry:", err)
-    });
+    const schema = normalizeSchema(rawSchema);
 
-    /* ---------------------------------
-       Prompt construction
-    ----------------------------------*/
-    const schemaContext = await getSchemaContextForQuery(message, schema);
+    await populateSchemaRegistry(rawSchema).catch(() => {});
 
-    const persisted = await getRecentMemory(session.id, 8);
-    const recentInline = (history || []).slice(-3);
-
-    const conversationHistory = [...persisted, ...recentInline]
-      .map(
-        (m: any) =>
-          `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`
-      )
-      .join("\n");
-
-    const fullSystemPrompt = `${systemPrompt}
-
-Database Schema:
-${schemaContext}
-
-${conversationHistory ? "Previous chat:\n" + conversationHistory : ""}
-`;
+    const schemaContext = await getSchemaContextForQuery(message, rawSchema);
 
     /* ---------------------------------
        RAG — Embedding
@@ -159,7 +125,7 @@ ${conversationHistory ? "Previous chat:\n" + conversationHistory : ""}
     try {
       questionEmbedding = await embedText(message);
     } catch {
-      console.warn("[chat] embedding failed, skipping RAG");
+      console.warn("[chat] embedding failed");
     }
 
     /* ---------------------------------
@@ -189,32 +155,26 @@ ${conversationHistory ? "Previous chat:\n" + conversationHistory : ""}
     }
 
     /* ---------------------------------
-       LLM — SQL generation
+       STRUCTURED REASONING + SAFE RETRY
     ----------------------------------*/
-    const llm = await generateText({
-      model: groq("llama-3.1-8b-instant"),
-      prompt: `${fullSystemPrompt}\n\nQuestion: ${message}`,
-      temperature: 0.1,
-    });
+    let plan;
 
-    let sqlQuery = llm.text
-      .replace(/```sql/gi, "")
-      .replace(/```/g, "")
-      .trim();
-
-    if (sqlQuery.endsWith(";")) sqlQuery = sqlQuery.slice(0, -1);
-
-    const validation = validateSQL(sqlQuery);
-    if (!validation.isValid) {
-      return Response.json(
-        {
-          content: `SQL validation failed: ${validation.error}`,
-          error: "validation_failed",
-          sql: sqlQuery,
-        },
-        { status: 400 }
+    try {
+      plan = await structuredReasoning(message, schemaContext);
+      validatePlan(plan, schema);
+    } catch (err: any) {
+      // One controlled retry with feedback
+      plan = await structuredReasoning(
+        message + `\nPrevious error: ${err.message}`,
+        schemaContext
       );
+      validatePlan(plan, schema);
     }
+
+    /* ---------------------------------
+       SQL GENERATION (DETERMINISTIC)
+    ----------------------------------*/
+    const sqlQuery = buildSQL(plan);
 
     /* ---------------------------------
        Execute SQL
@@ -224,22 +184,36 @@ ${conversationHistory ? "Previous chat:\n" + conversationHistory : ""}
     );
 
     /* ---------------------------------
-       Summary
+       Explanation (optional LLM)
     ----------------------------------*/
     let summary = `Found ${results.length} rows.`;
 
     try {
-      const s = await generateText({
+      const groq = createGroq({
+        apiKey:
+          process.env.GROQ_API_KEY ||
+          process.env.NEXT_PUBLIC_GROQ_API_KEY!,
+      });
+
+      const explanation = await generateText({
         model: groq("llama-3.1-8b-instant"),
         prompt: `
-Question: ${message}
-SQL: ${sqlQuery}
-Rows: ${results.length}
-Sample: ${results[0] ? JSON.stringify(results[0]) : "none"}
+User Question:
+${message}
+
+SQL (generated programmatically):
+${sqlQuery}
+
+Rows returned: ${results.length}
+Sample row:
+${results[0] ? JSON.stringify(results[0]) : "none"}
+
+Explain the result in plain English.
 `,
         temperature: 0.3,
       });
-      summary = s.text;
+
+      summary = explanation.text;
     } catch {}
 
     await addMemory({
@@ -250,7 +224,7 @@ Sample: ${results[0] ? JSON.stringify(results[0]) : "none"}
     }).catch(() => {});
 
     /* ---------------------------------
-       RAG — Store cache
+       Store cache
     ----------------------------------*/
     if (questionEmbedding.length > 0) {
       await storeQueryInCache({
