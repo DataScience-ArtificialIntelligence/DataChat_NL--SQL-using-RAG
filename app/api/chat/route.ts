@@ -219,14 +219,43 @@ export async function POST(req: Request) {
     /* =================================================
        ⚙️ SQL (DETERMINISTIC)
        ================================================= */
-    const sqlQuery = buildSQL(plan);
+    let sqlQuery = buildSQL(plan);
 
-    console.log("⚙️ SQL BUILT BY SYSTEM:");
-    console.log(sqlQuery);
+console.log("⚙️ SQL BUILT BY SYSTEM:");
+console.log(sqlQuery);
 
-    const results: QueryResult[] = await withRetry(() =>
-      executeQuery(sqlQuery)
-    );
+let results: QueryResult[];
+
+try {
+  results = await withRetry(() => executeQuery(sqlQuery));
+} catch (err) {
+  const failureType = analyzeSqlFailure(err);
+
+  if (failureType === "UNHEALABLE") {
+    throw err;
+  }
+
+  console.log("🩹 Self-healing triggered:", failureType);
+
+  const healedPlan = repairPlan(plan, failureType, {
+    logicalTableName,
+    availableColumns:
+      physicalSchema[physicalTableName].columns.map(c => c.name),
+  });
+
+  if (!healedPlan) {
+    throw err;
+  }
+
+  plan = healedPlan;
+  sqlQuery = buildSQL(plan);
+
+  console.log("⚙️ SQL REBUILT BY SYSTEM:");
+  console.log(sqlQuery);
+
+  results = await withRetry(() => executeQuery(sqlQuery));
+}
+
 
     /* -------- Explanation -------- */
     let summary =
