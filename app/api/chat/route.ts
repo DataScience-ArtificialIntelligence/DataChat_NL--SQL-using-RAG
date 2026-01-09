@@ -8,27 +8,30 @@ import { executeQuery } from "@/lib/query-executor";
 import { getOrCreateSession } from "@/lib/session";
 import { addMemory } from "@/lib/memory";
 import { ensureRagSetup } from "@/lib/setup";
+
 import {
   getSchemaContextForQuery,
   populateSchemaRegistry,
 } from "@/lib/schema-registry";
+
 import {
   findSimilarCachedQuery,
   storeQueryInCache,
 } from "@/lib/query-cache";
+
 import { embedText } from "@/lib/embeddings";
 
 import { structuredReasoning } from "@/lib/reasoning/structuredReasoning";
+import { normalizePlan } from "@/lib/reasoning/normalizePlan";
 import { validatePlan } from "@/lib/reasoning/validator";
-import { normalizeSchema } from "@/lib/reasoning/normalizeSchema";
+import { extractMetrics } from "@/lib/reasoning/extractMetrics";
 import { buildSQL } from "@/lib/sql/sqlBuilder";
+
+import { registerLogicalTable } from "@/lib/reasoning/logicalSchemaRegistry";
 
 import type { QueryResult } from "@/lib/types";
 
-/* -----------------------------
-   helpers
-------------------------------*/
-
+/* ----------------------------- helpers ------------------------------ */
 function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -42,38 +45,48 @@ async function withRetry<T>(
     return await fn();
   } catch (err) {
     if (retries <= 0) throw err;
-    console.warn(`[chat] retrying (${retries} left)`);
     await sleep(delayMs);
     return withRetry(fn, retries - 1, delayMs);
   }
 }
 
-/* -----------------------------
-   route
-------------------------------*/
+/* 🔒 Metric intent detector (HARD GUARANTEE) */
+function requiresMetric(question: string): boolean {
+  const q = question.toLowerCase();
+  return [
+    "how many",
+    "count",
+    "number of",
+    "average",
+    "avg",
+    "mean",
+    "total",
+    "sum",
+    "maximum",
+    "minimum",
+    "max",
+    "min",
+  ].some(k => q.includes(k));
+}
 
+/* ----------------------------- route ------------------------------ */
 export async function POST(req: Request) {
   console.log("🚀 /api/chat STARTED");
 
   try {
-    /* ---------------------------------
-       Infra warmup
-    ----------------------------------*/
     await ensureRagSetup();
     await ensureDbReady();
 
     const { message, tableName, sessionId } = await req.json();
 
-    if (!message || !message.trim()) {
+    if (!message?.trim()) {
       return Response.json(
         { content: "Please provide a question.", error: "invalid_input" },
         { status: 400 }
       );
     }
 
-    /* ---------------------------------
-       Session
-    ----------------------------------*/
+    /* -------- Session -------- */
     const session = sessionId
       ? { id: sessionId, createdAt: Date.now() }
       : await getOrCreateSession();
@@ -84,58 +97,67 @@ export async function POST(req: Request) {
       content: message,
     }).catch(() => {});
 
-    /* ---------------------------------
-       Load schema
-    ----------------------------------*/
-    let actualTableName = tableName ?? null;
+    /* -------- Load PHYSICAL schema -------- */
+    let physicalTableName = tableName ?? null;
 
-    let rawSchema = await withRetry(() =>
-      getTableSchema(actualTableName ?? undefined)
+    let physicalSchema = await withRetry(() =>
+      getTableSchema(physicalTableName ?? undefined)
     );
 
-    if (!rawSchema || Object.keys(rawSchema).length === 0) {
+    if (!physicalSchema || Object.keys(physicalSchema).length === 0) {
       const fallback = await findLatestTable();
       if (fallback) {
-        actualTableName = fallback;
-        rawSchema = await getTableSchema(actualTableName);
+        physicalTableName = fallback;
+        physicalSchema = await getTableSchema(fallback);
       }
     }
 
-    if (!rawSchema || Object.keys(rawSchema).length === 0) {
+    if (!physicalTableName || !physicalSchema[physicalTableName]) {
       return Response.json(
         { content: "No tables available.", error: "no_tables" },
         { status: 400 }
       );
     }
 
-    /* ---------------------------------
-       Normalize schema (CRITICAL FIX)
-    ----------------------------------*/
-    const schema = normalizeSchema(rawSchema);
+    /* -------- Register LOGICAL schema -------- */
+    const logicalTableName =
+      physicalTableName.replace(/^session_[^_]+_/, "");
 
-    await populateSchemaRegistry(rawSchema).catch(() => {});
+    registerLogicalTable({
+      logicalName: logicalTableName,
+      physicalName: physicalTableName,
+      description: "User dataset",
+      columns: physicalSchema[physicalTableName].columns.map(c => c.name),
+    });
 
-    const schemaContext = await getSchemaContextForQuery(message, rawSchema);
+    await populateSchemaRegistry(physicalSchema).catch(() => {});
 
-    /* ---------------------------------
-       RAG — Embedding
-    ----------------------------------*/
+    const schemaContext = await getSchemaContextForQuery(message);
+
+    /* -------- SAFE numeric column inference -------- */
+    const numericColumns =
+      physicalSchema[physicalTableName].columns
+        .filter(c => {
+          if (!c || typeof c.type !== "string") return false;
+          const t = c.type.toLowerCase();
+          return ["int", "float", "numeric", "double", "decimal"].some(x =>
+            t.includes(x)
+          );
+        })
+        .map(c => c.name);
+
+    /* -------- Embedding -------- */
     let questionEmbedding: number[] = [];
-
     try {
       questionEmbedding = await embedText(message);
-    } catch {
-      console.warn("[chat] embedding failed");
-    }
+    } catch {}
 
-    /* ---------------------------------
-       RAG — Cache lookup
-    ----------------------------------*/
+    /* -------- Cache lookup -------- */
     if (questionEmbedding.length > 0) {
       const cacheHit = await withRetry(() =>
         findSimilarCachedQuery({
           sessionId: session.id,
-          tableName: actualTableName ?? undefined,
+          tableName: physicalTableName!,
           embedding: questionEmbedding,
         })
       );
@@ -146,7 +168,7 @@ export async function POST(req: Request) {
         );
 
         return Response.json({
-          content: `Cached result: found ${results.length} rows.`,
+          content: `Cached result`,
           sql: cacheHit.normalized_sql,
           results,
           fromCache: true,
@@ -154,39 +176,63 @@ export async function POST(req: Request) {
       }
     }
 
-    /* ---------------------------------
-       STRUCTURED REASONING + SAFE RETRY
-    ----------------------------------*/
-    let plan;
+    /* =================================================
+       🧠 STRUCTURED REASONING
+       ================================================= */
+    let plan = await structuredReasoning(message, schemaContext);
 
-    try {
-      plan = await structuredReasoning(message, schemaContext);
-      validatePlan(plan, schema);
-    } catch (err: any) {
-      // One controlled retry with feedback
-      plan = await structuredReasoning(
-        message + `\nPrevious error: ${err.message}`,
-        schemaContext
-      );
-      validatePlan(plan, schema);
+    /* =================================================
+       🔥 METRIC EXTRACTION (GENERAL)
+       ================================================= */
+    plan = extractMetrics(message, plan, numericColumns);
+
+    /* 🚨 HARD ENFORCEMENT: NO METRIC → DEFAULT COUNT */
+    if (requiresMetric(message) && plan.metrics.length === 0) {
+      plan.metrics = [{ aggregation: "COUNT", column: "*" }];
+      plan.columns = [];
+      plan.group_by = [];
+      plan.order_by = [];
+      plan.limit = null;
     }
 
-    /* ---------------------------------
-       SQL GENERATION (DETERMINISTIC)
-    ----------------------------------*/
+    /* =================================================
+       🔒 NORMALIZATION + VALIDATION
+       ================================================= */
+    plan.tables = [logicalTableName];
+
+    if (Array.isArray(plan.columns) && plan.columns.includes("*")) {
+      plan.columns = [];
+    }
+
+    plan.columns = Array.isArray(plan.columns) ? plan.columns : [];
+    plan.filters = Array.isArray(plan.filters) ? plan.filters : [];
+    plan.metrics = Array.isArray(plan.metrics) ? plan.metrics : [];
+    plan.group_by = Array.isArray(plan.group_by) ? plan.group_by : [];
+    plan.order_by = Array.isArray(plan.order_by) ? plan.order_by : [];
+
+    plan = normalizePlan(plan);
+    validatePlan(plan);
+
+    console.log("🧠 STRUCTURED PLAN (FINAL):");
+    console.dir(plan, { depth: null });
+
+    /* =================================================
+       ⚙️ SQL (DETERMINISTIC)
+       ================================================= */
     const sqlQuery = buildSQL(plan);
 
-    /* ---------------------------------
-       Execute SQL
-    ----------------------------------*/
+    console.log("⚙️ SQL BUILT BY SYSTEM:");
+    console.log(sqlQuery);
+
     const results: QueryResult[] = await withRetry(() =>
       executeQuery(sqlQuery)
     );
 
-    /* ---------------------------------
-       Explanation (optional LLM)
-    ----------------------------------*/
-    let summary = `Found ${results.length} rows.`;
+    /* -------- Explanation -------- */
+    let summary =
+      plan.metrics.length > 0
+        ? "Computed result."
+        : `Found ${results.length} rows.`;
 
     try {
       const groq = createGroq({
@@ -201,14 +247,11 @@ export async function POST(req: Request) {
 User Question:
 ${message}
 
-SQL (generated programmatically):
+SQL:
 ${sqlQuery}
 
-Rows returned: ${results.length}
-Sample row:
-${results[0] ? JSON.stringify(results[0]) : "none"}
-
-Explain the result in plain English.
+Result:
+${JSON.stringify(results, null, 2)}
 `,
         temperature: 0.3,
       });
@@ -223,13 +266,11 @@ Explain the result in plain English.
       sql: sqlQuery,
     }).catch(() => {});
 
-    /* ---------------------------------
-       Store cache
-    ----------------------------------*/
+    /* -------- Cache store -------- */
     if (questionEmbedding.length > 0) {
       await storeQueryInCache({
         sessionId: session.id,
-        tableName: actualTableName ?? undefined,
+        tableName: physicalTableName!,
         question: message,
         sql: sqlQuery,
         results,

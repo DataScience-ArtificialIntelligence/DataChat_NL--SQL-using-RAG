@@ -5,16 +5,18 @@ export function buildReasoningPrompt(
   return `
 You are a database query planner.
 
-STRICT RULES (VERY IMPORTANT):
+CRITICAL RULES (FAIL IF VIOLATED):
+- You MUST choose table names ONLY from the SCHEMA section
+- You MUST NOT invent table names
+- NEVER use session-prefixed table names
+- If the schema contains ONLY ONE table, you MUST use that table
 - DO NOT generate SQL
 - DO NOT explain anything
 - DO NOT use "*" as a column name
-- If the user wants all columns, use: "columns": []
-- Use ONLY table and column names that appear in the schema
+- If all columns are requested, use: "columns": []
 - Output ONLY valid JSON (no markdown, no comments)
-- Invalid JSON = failure
 
-SCHEMA:
+SCHEMA (THIS IS THE COMPLETE WORLD — NOTHING ELSE EXISTS):
 ${schemaContext}
 
 USER QUESTION:
