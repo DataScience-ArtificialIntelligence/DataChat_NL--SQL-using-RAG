@@ -15,9 +15,11 @@ import {
 } from "@/lib/schema-registry";
 
 import {
-  findSimilarCachedQuery,
+  findSemanticCachedQuery,
   storeQueryInCache,
 } from "@/lib/query-cache";
+
+import { cacheMetrics } from "@/lib/query-cache/cacheMetrics";
 
 import { embedText } from "@/lib/embeddings";
 
@@ -26,6 +28,7 @@ import { normalizePlan } from "@/lib/reasoning/normalizePlan";
 import { validatePlan } from "@/lib/reasoning/validator";
 import { extractMetrics } from "@/lib/reasoning/extractMetrics";
 import { buildSQL } from "@/lib/sql/sqlBuilder";
+import { analyzeSqlFailure, repairPlan } from "@/lib/sql/selfHealing";
 
 import { registerLogicalTable } from "@/lib/reasoning/logicalSchemaRegistry";
 
@@ -127,7 +130,7 @@ export async function POST(req: Request) {
       logicalName: logicalTableName,
       physicalName: physicalTableName,
       description: "User dataset",
-      columns: physicalSchema[physicalTableName].columns.map(c => c.name),
+      columns: physicalSchema[physicalTableName].columns.map((c: any) => c.name),
     });
 
     await populateSchemaRegistry(physicalSchema).catch(() => {});
@@ -137,44 +140,20 @@ export async function POST(req: Request) {
     /* -------- SAFE numeric column inference -------- */
     const numericColumns =
       physicalSchema[physicalTableName].columns
-        .filter(c => {
+        .filter((c: any) => {
           if (!c || typeof c.type !== "string") return false;
           const t = c.type.toLowerCase();
           return ["int", "float", "numeric", "double", "decimal"].some(x =>
             t.includes(x)
           );
         })
-        .map(c => c.name);
+        .map((c: any) => c.name);
 
     /* -------- Embedding -------- */
     let questionEmbedding: number[] = [];
     try {
       questionEmbedding = await embedText(message);
     } catch {}
-
-    /* -------- Cache lookup -------- */
-    if (questionEmbedding.length > 0) {
-      const cacheHit = await withRetry(() =>
-        findSimilarCachedQuery({
-          sessionId: session.id,
-          tableName: physicalTableName!,
-          embedding: questionEmbedding,
-        })
-      );
-
-      if (cacheHit) {
-        const results = await withRetry(() =>
-          executeQuery(cacheHit.normalized_sql)
-        );
-
-        return Response.json({
-          content: `Cached result`,
-          sql: cacheHit.normalized_sql,
-          results,
-          fromCache: true,
-        });
-      }
-    }
 
     /* =================================================
        🧠 STRUCTURED REASONING
@@ -184,10 +163,10 @@ export async function POST(req: Request) {
     /* =================================================
        🔥 METRIC EXTRACTION (GENERAL)
        ================================================= */
-    plan = extractMetrics(message, plan, numericColumns);
+    plan = extractMetrics(message, plan);
 
     /* 🚨 HARD ENFORCEMENT: NO METRIC → DEFAULT COUNT */
-    if (requiresMetric(message) && plan.metrics.length === 0) {
+    if (requiresMetric(message) && (!plan.metrics || plan.metrics.length === 0)) {
       plan.metrics = [{ aggregation: "COUNT", column: "*" }];
       plan.columns = [];
       plan.group_by = [];
@@ -216,6 +195,42 @@ export async function POST(req: Request) {
     console.log("🧠 STRUCTURED PLAN (FINAL):");
     console.dir(plan, { depth: null });
 
+    /* -------- Semantic-aware cache lookup -------- */
+    if (questionEmbedding.length > 0) {
+      const semanticHit = await withRetry(() =>
+        findSemanticCachedQuery({
+          sessionId: session.id,
+          tableName: physicalTableName!,
+          plan,
+          embedding: questionEmbedding,
+        })
+      );
+
+      if (semanticHit?.hit) {
+        const cached = semanticHit.hit;
+        console.log(
+    `   🟢 CACHE HIT [${semanticHit.reason}]`,
+            semanticHit.hit.semantic_key
+        );
+        const results = await withRetry(() =>
+          executeQuery(cached.normalized_sql)
+        );
+
+        cacheMetrics.hits++;
+        console.log("📊 Cache Metrics:", cacheMetrics);
+
+        return Response.json({
+          content: `Cached result (${semanticHit.reason})`,
+          sql: cached.normalized_sql,
+          results,
+          cache: {
+            hit: true,
+            type: semanticHit.reason
+          }
+        });
+      }
+    }
+
     /* =================================================
        ⚙️ SQL (DETERMINISTIC)
        ================================================= */
@@ -240,7 +255,7 @@ try {
   const healedPlan = repairPlan(plan, failureType, {
     logicalTableName,
     availableColumns:
-      physicalSchema[physicalTableName].columns.map(c => c.name),
+      physicalSchema[physicalTableName].columns.map((c: any) => c.name),
   });
 
   if (!healedPlan) {
@@ -259,7 +274,7 @@ try {
 
     /* -------- Explanation -------- */
     let summary =
-      plan.metrics.length > 0
+      (plan.metrics && plan.metrics.length > 0)
         ? "Computed result."
         : `Found ${results.length} rows.`;
 
@@ -304,14 +319,20 @@ ${JSON.stringify(results, null, 2)}
         sql: sqlQuery,
         results,
         embedding: questionEmbedding,
+        plan,
       });
     }
+
+    cacheMetrics.misses++;
+    console.log("📊 Cache Metrics:", cacheMetrics);
 
     return Response.json({
       content: summary,
       sql: sqlQuery,
       results,
-      fromCache: false,
+      cache: {
+        hit: false
+      }
     });
   } catch (err: any) {
     console.error("❌ SERVER ERROR:", err);

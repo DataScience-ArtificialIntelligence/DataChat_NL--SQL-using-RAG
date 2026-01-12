@@ -22,8 +22,17 @@ create table if not exists public.conversation_query_cache (
   -- JSON representation of SQL query results
   results jsonb,
 
+  -- Sample of results (first 100 rows)
+  result_sample jsonb,
+
+  -- Number of rows in results
+  row_count int,
+
   -- Embedding vector (1024 dims for mxbai-embed-large)
-  embedding vector(1024),
+  question_embedding vector(1024),
+
+  -- Semantic key for exact matching
+  semantic_key text,
 
   -- Timestamp for cache ordering
   created_at timestamptz not null default now()
@@ -36,7 +45,7 @@ create table if not exists public.conversation_query_cache (
 -- HNSW vector index for cosine similarity search
 create index if not exists conversation_query_cache_embedding_idx
 on public.conversation_query_cache
-using hnsw (embedding vector_cosine_ops);
+using hnsw (question_embedding vector_cosine_ops);
 
 -- Filter by session quickly
 create index if not exists conversation_query_cache_session_idx
@@ -49,3 +58,50 @@ on public.conversation_query_cache (table_name);
 -- Sort by newest cache entries
 create index if not exists conversation_query_cache_created_idx
 on public.conversation_query_cache (created_at desc);
+
+-- ==========================================
+-- RPC Function for semantic similarity search
+-- ==========================================
+
+CREATE OR REPLACE FUNCTION match_queries_by_embedding(
+  query_embedding vector(1024),
+  match_threshold float DEFAULT 0.75,
+  match_count int DEFAULT 5
+)
+RETURNS TABLE(
+  id bigint,
+  session_id text,
+  table_name text,
+  question text,
+  normalized_sql text,
+  results jsonb,
+  result_sample jsonb,
+  row_count int,
+  question_embedding vector(1024),
+  semantic_key text,
+  created_at timestamptz,
+  similarity float
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RETURN QUERY
+  SELECT
+    cqc.id,
+    cqc.session_id,
+    cqc.table_name,
+    cqc.question,
+    cqc.normalized_sql,
+    cqc.results,
+    cqc.result_sample,
+    cqc.row_count,
+    cqc.question_embedding,
+    cqc.semantic_key,
+    cqc.created_at,
+    1 - (cqc.question_embedding <=> query_embedding) AS similarity
+  FROM conversation_query_cache cqc
+  WHERE 1 - (cqc.question_embedding <=> query_embedding) > match_threshold
+  ORDER BY cqc.question_embedding <=> query_embedding
+  LIMIT match_count;
+END;
+$$;

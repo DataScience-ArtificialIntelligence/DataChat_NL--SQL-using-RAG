@@ -62,9 +62,8 @@ export async function structuredReasoning(
      Prevent accidental full-table scans
   ----------------------------------*/
   if (
-    plan.metrics.length === 0 &&
-    !plan.limit &&
-    (!plan.intent || plan.intent === "unknown")
+    (!plan.metrics || plan.metrics.length === 0) &&
+    !plan.limit
   ) {
     plan.limit = 100
   }

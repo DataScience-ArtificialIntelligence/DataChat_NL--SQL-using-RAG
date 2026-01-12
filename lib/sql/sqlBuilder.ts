@@ -28,7 +28,7 @@ export function buildSQL(
   ----------------------------------*/
   let selectParts: string[]
 
-  if (plan.metrics.length > 0) {
+  if (plan.metrics && plan.metrics.length > 0) {
     selectParts = plan.metrics.map(m => {
       // ✅ COUNT(*) special-case
       if (
@@ -41,7 +41,7 @@ export function buildSQL(
       // ✅ All other aggregations require column
       return `${m.aggregation}("${m.column}")`
     })
-  } else if (plan.columns.length > 0) {
+  } else if (plan.columns && plan.columns.length > 0) {
     selectParts = plan.columns.map(col => `"${col}"`)
   } else {
     selectParts = ["*"]
@@ -52,7 +52,7 @@ export function buildSQL(
   /* ---------------------------------
      3. WHERE clause
   ----------------------------------*/
-  if (plan.filters.length > 0) {
+  if (plan.filters && plan.filters.length > 0) {
     const where = plan.filters.map(f => {
       const value =
         typeof f.value === "number"
@@ -68,7 +68,7 @@ export function buildSQL(
   /* ---------------------------------
      4. GROUP BY
   ----------------------------------*/
-  if (plan.group_by.length > 0) {
+  if (plan.group_by && plan.group_by.length > 0) {
     sql += ` GROUP BY ${plan.group_by
       .map(col => `"${col}"`)
       .join(", ")}`
@@ -77,7 +77,7 @@ export function buildSQL(
   /* ---------------------------------
      5. ORDER BY
   ----------------------------------*/
-  if (plan.order_by.length > 0) {
+  if (plan.order_by && plan.order_by.length > 0) {
     sql += ` ORDER BY ${plan.order_by
       .map(col => `"${col}"`)
       .join(", ")}`

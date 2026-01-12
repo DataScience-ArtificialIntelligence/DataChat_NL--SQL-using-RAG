@@ -1,6 +1,8 @@
 import { createClient } from "@supabase/supabase-js"
 import type { QueryResult } from "@/lib/types"
 import { safeVectorLiteral, safeSessionId, safeTableNameLiteral } from "@/lib/sql-escape"
+import { buildSemanticCacheKey } from "./query-cache/semanticKey"
+import type { StructuredPlan } from "@/lib/reasoning/types"
 
 // expected vector size
 const EMBEDDING_DIM = Number(process.env.EMBEDDING_DIM || "768")
@@ -156,6 +158,7 @@ export async function storeQueryInCache(params: {
   sql: string
   results: QueryResult[]
   embedding: number[]
+  plan: StructuredPlan
 }) {
   const supa = admin()
 
@@ -177,6 +180,8 @@ export async function storeQueryInCache(params: {
   const rowCount = params.results?.length ?? 0
   const sample = params.results?.slice(0, 100) ?? []
 
+  const semanticKey = buildSemanticCacheKey(params.tableName!, params.plan);
+
   const payload = {
     session_id: params.sessionId ?? null,
     table_name: params.tableName ?? null,
@@ -185,6 +190,7 @@ export async function storeQueryInCache(params: {
     result_sample: sample,
     row_count: rowCount,
     question_embedding: params.embedding,
+    semantic_key: semanticKey,
   }
 
   const { error } = await supa.from("conversation_query_cache").insert(payload)
@@ -195,3 +201,6 @@ export async function storeQueryInCache(params: {
     console.log("✅ Query saved to cache (conversation_query_cache)")
   }
 }
+
+// Re-export the semantic cache function
+export { findSemanticCachedQuery } from "./query-cache/findSimilarCachedQuery";

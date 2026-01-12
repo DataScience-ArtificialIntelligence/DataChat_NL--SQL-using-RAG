@@ -5,16 +5,17 @@ export function normalizeSchema(
 
   // Case 1: already normalized
   for (const [key, value] of Object.entries(rawSchema)) {
-    if (value && value.columns) {
-      if (Array.isArray(value.columns)) {
+    if (value && typeof value === 'object' && 'columns' in value) {
+      const val = value as any;
+      if (Array.isArray(val.columns)) {
         // columns as array → convert to map
         normalized[key] = {
           columns: Object.fromEntries(
-            value.columns.map((c: any) => [c.name, c])
+            val.columns.map((c: any) => [c.name, c])
           ),
         }
       } else {
-        normalized[key] = value
+        normalized[key] = val
       }
     }
   }
